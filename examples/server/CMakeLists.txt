@@ -62,6 +62,35 @@ else()
     message(STATUS "Frontend disabled or directory not found: ${FRONTEND_DIR}")
 endif()
 
+# Validate openapi.yaml is in sync with route registrations — fails build if not
+find_program(PYTHON3_EXECUTABLE NAMES python3 python)
+if(PYTHON3_EXECUTABLE)
+    add_custom_target(${TARGET}_validate_openapi
+        COMMAND "${PYTHON3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/validate_openapi.py"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        COMMENT "Validating OpenAPI spec against registered routes"
+        VERBATIM
+    )
+
+    # Generate openapi_yaml.h from openapi.yaml (rebuilds only when the YAML changes)
+    set(OPENAPI_YAML_SRC "${CMAKE_CURRENT_SOURCE_DIR}/openapi.yaml")
+    set(OPENAPI_YAML_HEADER "${CMAKE_CURRENT_BINARY_DIR}/openapi_yaml.h")
+    add_custom_command(
+        OUTPUT "${OPENAPI_YAML_HEADER}"
+        COMMAND "${PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/gen_openapi_yaml_h.py"
+                "${OPENAPI_YAML_SRC}"
+                "${OPENAPI_YAML_HEADER}"
+        DEPENDS "${OPENAPI_YAML_SRC}"
+        COMMENT "Generating openapi_yaml.h from openapi.yaml"
+        VERBATIM
+    )
+    set_source_files_properties("${OPENAPI_YAML_HEADER}" PROPERTIES GENERATED TRUE)
+    message(STATUS "OpenAPI spec validation and header generation enabled")
+else()
+    message(WARNING "python3 not found; OpenAPI spec validation and header generation disabled.")
+endif()
+
 add_executable(${TARGET}
     ../common/common.cpp
     ../common/log.cpp
@@ -77,6 +106,12 @@ add_executable(${TARGET}
 )
 if(APPLE)
     sd_set_macos_rpaths(${TARGET})
+endif()
+
+if(PYTHON3_EXECUTABLE)
+    add_dependencies(${TARGET} ${TARGET}_validate_openapi)
+    target_sources(${TARGET} PRIVATE "${OPENAPI_YAML_HEADER}")
+    target_include_directories(${TARGET} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 endif()
 
 if(HAVE_FRONTEND_BUILD)
