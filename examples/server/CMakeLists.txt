@@ -75,6 +75,9 @@ add_executable(${TARGET}
     routes_sdcpp.cpp
     routes_docs.cpp
 )
+if(APPLE)
+    sd_set_macos_rpaths(${TARGET})
+endif()
 
 if(HAVE_FRONTEND_BUILD)
     add_dependencies(${TARGET} ${TARGET}_frontend)
