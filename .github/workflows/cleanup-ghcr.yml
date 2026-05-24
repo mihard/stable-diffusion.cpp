@@ -1,0 +1,23 @@
+name: Clean up old GHCR images
+
+on:
+  schedule:
+    - cron: '0 3 * * 0'  # every Sunday at 03:00 UTC
+  workflow_dispatch:
+
+permissions:
+  packages: write
+
+jobs:
+  cleanup:
+    name: Delete vulkan images older than 30 days
+    runs-on: ubuntu-latest
+    steps:
+      - uses: snok/container-retention-policy@v3
+        with:
+          account-type: personal
+          image-names: stable-diffusion.cpp/vulkan
+          cut-off: 30 days ago UTC
+          timestamp-to-use: updated_at
+          token: ${{ secrets.GITHUB_TOKEN }}
+          token-type: github-token
