@@ -2,9 +2,12 @@
 
 #include "async_jobs.h"
 
+#include <cmath>
+#include <cstring>
 #include <iomanip>
 #include <sstream>
 
+#include "common/common.h"
 #include "common/log.h"
 #include "common/media_io.h"
 #include "common/resource_owners.hpp"
@@ -15,6 +18,8 @@ const char* async_job_kind_name(AsyncJobKind kind) {
             return "img_gen";
         case AsyncJobKind::VidGen:
             return "vid_gen";
+        case AsyncJobKind::Upscale:
+            return "upscale";
         default:
             return "img_gen";
     }
@@ -139,8 +144,11 @@ json make_async_job_json(const AsyncJobManager& manager, const AsyncGenerationJo
             for (size_t i = 0; i < job.result_images_b64.size(); ++i) {
                 images.push_back({{"index", i}, {"b64_json", job.result_images_b64[i]}});
             }
+            const std::string& out_fmt = (job.kind == AsyncJobKind::Upscale)
+                                             ? job.upscale.output_format
+                                             : job.img_gen.output_format;
             result["result"] = {
-                {"output_format", job.img_gen.output_format},
+                {"output_format", out_fmt},
                 {"images", images},
             };
         }
@@ -269,6 +277,151 @@ bool execute_vid_gen_job(ServerRuntime& runtime,
     return true;
 }
 
+static SDImageOwner apply_upscaler(ServerRuntime& runtime,
+                                    const std::string& upscaler_name,
+                                    const sd_image_t& input,
+                                    int target_w,
+                                    int target_h,
+                                    int tile_size) {
+    if (upscaler_name.empty() || upscaler_name == "None") {
+        // Return input as-is (copy pixels)
+        size_t nbytes = static_cast<size_t>(input.width) * input.height * input.channel;
+        uint8_t* buf  = static_cast<uint8_t*>(malloc(nbytes));
+        if (!buf) return SDImageOwner();
+        memcpy(buf, input.data, nbytes);
+        return SDImageOwner({input.width, input.height, input.channel, buf});
+    }
+
+    if (upscaler_name == "Lanczos") {
+        sd_image_t resized = resize_sd_image(input, target_w, target_h, true);
+        return SDImageOwner(resized);
+    }
+
+    if (upscaler_name == "Nearest") {
+        sd_image_t resized = resize_sd_image(input, target_w, target_h, false);
+        return SDImageOwner(resized);
+    }
+
+    // Model-backed upscaler: look up path in cache
+    std::string fullpath;
+    {
+        std::lock_guard<std::mutex> lock(*runtime.upscaler_mutex);
+        for (const auto& entry : *runtime.upscaler_cache) {
+            if (entry.name == upscaler_name) {
+                fullpath = entry.fullpath;
+                break;
+            }
+        }
+    }
+    if (fullpath.empty()) {
+        LOG_ERROR("upscaler not found: %s", upscaler_name.c_str());
+        return SDImageOwner();
+    }
+
+    UpscalerCtxPtr ctx(new_upscaler_ctx(fullpath.c_str(),
+                                        runtime.ctx_params->offload_params_to_cpu,
+                                        runtime.ctx_params->diffusion_conv_direct,
+                                        runtime.ctx_params->n_threads,
+                                        tile_size,
+                                        runtime.ctx_params->backend.c_str(),
+                                        runtime.ctx_params->params_backend.c_str()));
+    if (!ctx) {
+        LOG_ERROR("new_upscaler_ctx failed for: %s", fullpath.c_str());
+        return SDImageOwner();
+    }
+
+    SDImageOwner upscaled(upscale(ctx.get(), input, 4));
+    if (!upscaled.get().data) {
+        LOG_ERROR("upscale() returned null for: %s", upscaler_name.c_str());
+        return SDImageOwner();
+    }
+
+    const sd_image_t& up = upscaled.get();
+    if (static_cast<int>(up.width) == target_w && static_cast<int>(up.height) == target_h) {
+        return upscaled;
+    }
+
+    // Model output differs from target — resize to exact target
+    sd_image_t resized = resize_sd_image(up, target_w, target_h, true);
+    return SDImageOwner(resized);
+}
+
+bool perform_upscale(ServerRuntime& runtime,
+                     const UpscaleJobRequest& request,
+                     std::string& output_image_b64,
+                     std::string& error_message) {
+    refresh_upscaler_cache(runtime);
+
+    SDImageOwner decoded_image;
+    if (!decode_base64_image(request.image_b64, 3, 0, 0, decoded_image)) {
+        error_message = "failed to decode input image";
+        return false;
+    }
+    const sd_image_t& src = decoded_image.get();
+
+    const int tw = (request.target_width > 0)
+                       ? request.target_width
+                       : static_cast<int>(std::round(src.width * request.scale));
+    const int th = (request.target_height > 0)
+                       ? request.target_height
+                       : static_cast<int>(std::round(src.height * request.scale));
+
+    if (tw <= 0 || th <= 0) {
+        error_message = "computed target dimensions are invalid";
+        return false;
+    }
+
+    SDImageOwner image_1 = apply_upscaler(runtime, request.upscaler_1, src, tw, th, request.tile_size);
+    if (!image_1.get().data) {
+        error_message = "upscaler_1 failed ('" + request.upscaler_1 + "')";
+        return false;
+    }
+
+    const bool use_blend = (request.upscaler_2 != "None" && !request.upscaler_2.empty() &&
+                             request.upscaler_2_visibility > 0.0f);
+    if (use_blend) {
+        SDImageOwner image_2 = apply_upscaler(runtime, request.upscaler_2, src, tw, th, request.tile_size);
+        if (!image_2.get().data) {
+            error_message = "upscaler_2 failed ('" + request.upscaler_2 + "')";
+            return false;
+        }
+
+        const sd_image_t& i1 = image_1.get();
+        const sd_image_t& i2 = image_2.get();
+        const float v         = std::min(std::max(request.upscaler_2_visibility, 0.0f), 1.0f);
+        const size_t npixels  = static_cast<size_t>(tw) * th * i1.channel;
+        for (size_t i = 0; i < npixels; ++i) {
+            float blended = i1.data[i] * (1.0f - v) + i2.data[i] * v;
+            i1.data[i]    = static_cast<uint8_t>(std::min(std::max(blended + 0.5f, 0.0f), 255.0f));
+        }
+    }
+
+    EncodedImageFormat fmt = EncodedImageFormat::PNG;
+    if (request.output_format == "jpeg") {
+        fmt = EncodedImageFormat::JPEG;
+    } else if (request.output_format == "webp") {
+        fmt = EncodedImageFormat::WEBP;
+    }
+
+    const sd_image_t& out = image_1.get();
+    auto encoded = encode_image_to_vector(fmt, out.data, out.width, out.height, out.channel,
+                                          "", request.output_compression);
+    if (encoded.empty()) {
+        error_message = "failed to encode output image";
+        return false;
+    }
+
+    output_image_b64 = base64_encode(encoded);
+    return true;
+}
+
+bool execute_upscale_job(ServerRuntime& runtime,
+                         AsyncGenerationJob& job,
+                         std::string& output_image_b64,
+                         std::string& error_message) {
+    return perform_upscale(runtime, job.upscale, output_image_b64, error_message);
+}
+
 void async_job_worker(ServerRuntime& runtime) {
     AsyncJobManager& manager = *runtime.async_job_manager;
 
@@ -318,6 +471,12 @@ void async_job_worker(ServerRuntime& runtime) {
                                      output_frame_count,
                                      output_fps,
                                      error_message);
+        } else if (job->kind == AsyncJobKind::Upscale) {
+            std::string upscale_b64;
+            ok = execute_upscale_job(runtime, *job, upscale_b64, error_message);
+            if (ok) {
+                output_images.push_back(std::move(upscale_b64));
+            }
         } else {
             error_message = "unsupported job kind";
         }
