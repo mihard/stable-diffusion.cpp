@@ -1374,3 +1374,21 @@ bool write_wav_to_file(const std::string& path,
     file.write(reinterpret_cast<const char*>(pcm.data()), static_cast<std::streamsize>(pcm.size() * sizeof(int16_t)));
     return file.good();
 }
+
+sd_image_t resize_sd_image(const sd_image_t& input, int target_w, int target_h, bool use_lanczos) {
+    if (!input.data || input.width == 0 || input.height == 0 || target_w <= 0 || target_h <= 0) {
+        return {0, 0, 0, nullptr};
+    }
+    uint8_t* out = static_cast<uint8_t*>(malloc(static_cast<size_t>(target_w) * target_h * input.channel));
+    if (!out) {
+        return {0, 0, 0, nullptr};
+    }
+    stbir_resize_uint8_generic(
+        input.data, static_cast<int>(input.width), static_cast<int>(input.height), 0,
+        out, target_w, target_h, 0,
+        static_cast<int>(input.channel), STBIR_ALPHA_CHANNEL_NONE, 0,
+        STBIR_EDGE_CLAMP,
+        use_lanczos ? STBIR_FILTER_CATMULLROM : STBIR_FILTER_BOX,
+        STBIR_COLORSPACE_SRGB, nullptr);
+    return {static_cast<uint32_t>(target_w), static_cast<uint32_t>(target_h), input.channel, out};
+}

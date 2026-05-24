@@ -78,6 +78,19 @@ struct VidGenJobRequest {
     }
 };
 
+struct UpscaleJobRequest {
+    std::string image_b64;
+    std::string upscaler_1          = "None";
+    std::string upscaler_2          = "None";
+    float upscaler_2_visibility     = 0.0f;
+    float scale                     = 2.0f;
+    int target_width                = 0;
+    int target_height               = 0;
+    int tile_size                   = 128;
+    std::string output_format       = "png";
+    int output_compression          = 100;
+};
+
 std::string base64_encode(const std::vector<uint8_t>& bytes);
 std::string normalize_output_format(std::string output_format);
 std::vector<std::string> supported_img_output_formats(bool allow_webp = true);

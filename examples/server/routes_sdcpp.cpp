@@ -531,6 +531,86 @@ void register_sdcpp_api_endpoints(httplib::Server& svr, ServerRuntime& rt) {
         }
     });
 
+    svr.Post("/sdcpp/v1/upscale", [runtime](const httplib::Request& req, httplib::Response& res) {
+        try {
+            if (req.body.empty()) {
+                res.status = 400;
+                res.set_content(R"({"error":"empty body"})", "application/json");
+                return;
+            }
+
+            json body = json::parse(req.body);
+
+            if (!body.contains("image") || !body["image"].is_string() || body["image"].get<std::string>().empty()) {
+                res.status = 400;
+                res.set_content(R"({"error":"image field is required"})", "application/json");
+                return;
+            }
+
+            UpscaleJobRequest request;
+            request.image_b64            = body["image"].get<std::string>();
+            request.upscaler_1           = body.value("upscaler", std::string("None"));
+            request.upscaler_2           = body.value("upscaler_2", std::string("None"));
+            request.upscaler_2_visibility = body.value("upscaler_2_visibility", 0.0f);
+            request.scale                = body.value("scale", 2.0f);
+            request.target_width         = body.value("target_width", 0);
+            request.target_height        = body.value("target_height", 0);
+            request.tile_size            = body.value("tile_size", 128);
+            request.output_compression   = body.value("output_compression", 100);
+
+            std::string output_format = body.value("output_format", std::string("png"));
+            std::string error_message;
+            {
+                ImgGenJobRequest tmp;
+                tmp.output_format = output_format;
+                if (!assign_output_options(tmp, output_format, request.output_compression, false, error_message)) {
+                    res.status = 400;
+                    res.set_content(json({{"error", error_message}}).dump(), "application/json");
+                    return;
+                }
+                request.output_format = tmp.output_format;
+            }
+
+            AsyncJobManager& manager                = *runtime->async_job_manager;
+            std::shared_ptr<AsyncGenerationJob> job = std::make_shared<AsyncGenerationJob>();
+            job->kind                               = AsyncJobKind::Upscale;
+            job->status                             = AsyncJobStatus::Queued;
+            job->created_at                         = unix_timestamp_now();
+            job->upscale                            = std::move(request);
+
+            {
+                std::lock_guard<std::mutex> lock(manager.mutex);
+                purge_expired_jobs(manager);
+                if (count_pending_jobs(manager) >= manager.max_pending_jobs) {
+                    res.status = 429;
+                    res.set_content(R"({"error":"job queue is full"})", "application/json");
+                    return;
+                }
+                job->id               = make_async_job_id(manager);
+                manager.jobs[job->id] = job;
+                manager.queue.push_back(job->id);
+            }
+
+            manager.cv.notify_one();
+
+            json out;
+            out["id"]       = job->id;
+            out["kind"]     = async_job_kind_name(job->kind);
+            out["status"]   = async_job_status_name(job->status);
+            out["created"]  = job->created_at;
+            out["poll_url"] = "/sdcpp/v1/jobs/" + job->id;
+
+            res.status = 202;
+            res.set_content(out.dump(), "application/json");
+        } catch (const json::parse_error& e) {
+            res.status = 400;
+            res.set_content(json({{"error", "invalid json"}, {"message", e.what()}}).dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 500;
+            res.set_content(json({{"error", "server_error"}, {"message", e.what()}}).dump(), "application/json");
+        }
+    });
+
     svr.Get(R"(/sdcpp/v1/jobs/([A-Za-z0-9_\-]+))", [runtime](const httplib::Request& req, httplib::Response& res) {
         AsyncJobManager& manager = *runtime->async_job_manager;
         std::lock_guard<std::mutex> lock(manager.mutex);
