@@ -109,48 +109,9 @@ jobs:
           cmake . -B ./build -DGGML_AVX2=ON -DSD_BUILD_SHARED_LIBS=ON
           cmake --build ./build --config Release --parallel
 
-  build-linux-vulkan:
-    name: Build (Linux Vulkan)
-    needs: check-ancestry
-    if: needs.check-ancestry.outputs.is-descendant == 'true'
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10.15.1
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential libvulkan-dev glslc spirv-headers
-
-      - name: Install Python dependencies
-        run: pip install pyyaml
-
-      - name: Validate OpenAPI spec
-        run: python3 examples/server/validate_openapi.py
-
-      - name: Build
-        run: |
-          cmake . -B ./build -DSD_BUILD_SHARED_LIBS=ON -DSD_VULKAN=ON
-          cmake --build ./build --config Release --parallel
-
   build-and-push-docker:
     name: Build and push Vulkan Docker image
-    needs: [check-ancestry, build-linux-cpu, build-linux-vulkan]
+    needs: [check-ancestry, build-linux-cpu]
     if: needs.check-ancestry.outputs.is-descendant == 'true'
     runs-on: ubuntu-latest
 
