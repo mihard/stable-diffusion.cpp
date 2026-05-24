@@ -115,4 +115,10 @@ bool load_wav_from_file(const std::string& path,
                         uint32_t& sample_rate,
                         uint32_t& channels);
 
+// Scales input to (target_w x target_h).
+// use_lanczos=true uses CatmullRom; false uses Box (nearest-neighbour approximation).
+// Returns a new sd_image_t with malloc-owned data. Returns {0,0,0,nullptr} on failure.
+// Caller must free(result.data).
+sd_image_t resize_sd_image(const sd_image_t& input, int target_w, int target_h, bool use_lanczos);
+
 #endif  // __MEDIA_IO_H__
