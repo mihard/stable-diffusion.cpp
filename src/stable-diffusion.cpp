@@ -62,6 +62,7 @@ const char* model_version_to_str[] = {
     "Z-Image",
     "Ovis Image",
     "Ernie Image",
+    "Lens",
     "Longcat-Image",
 };
 
@@ -646,6 +647,15 @@ public:
                                                                     params_backend_for(SDBackendModule::DIFFUSION),
                                                                     tensor_storage_map,
                                                                     "model.diffusion_model");
+            } else if (sd_version_is_lens(version)) {
+                cond_stage_model = std::make_shared<LLMEmbedder>(backend_for(SDBackendModule::TE),
+                                                                 params_backend_for(SDBackendModule::TE),
+                                                                 tensor_storage_map,
+                                                                 version);
+                diffusion_model  = std::make_shared<LensModel>(backend_for(SDBackendModule::DIFFUSION),
+                                                              params_backend_for(SDBackendModule::DIFFUSION),
+                                                              tensor_storage_map,
+                                                              "model.diffusion_model");
             } else {  // SD1.x SD2.x SDXL
                 std::map<std::string, std::string> embbeding_map;
                 for (uint32_t i = 0; i < sd_ctx_params->embedding_count; i++) {
@@ -935,6 +945,11 @@ public:
             ignore_tensors.insert("text_encoders.llm.vision_tower.");
             ignore_tensors.insert("text_encoders.llm.multi_modal_projector.");
         }
+        if (sd_version_is_lens(version)) {
+            ignore_tensors.insert("text_encoders.llm.tokenizer_json");
+            ignore_tensors.insert("text_encoders.llm.model.layers.0.mlp.experts.gate_up_proj.weight_scale_2");
+            ignore_tensors.insert("text_encoders.llm.model.layers.0.mlp.experts.down_proj.weight_scale_2");
+        }
         if (version == VERSION_HIDREAM_O1) {
             ignore_tensors.insert("lm_head.");
             ignore_tensors.insert("model.visual.deepstack_merger_list.");
@@ -1098,7 +1113,6 @@ public:
                         pred_type = EPS_PRED;
                     }
                 } else if (sd_version_is_sd3(version) ||
-                           sd_version_is_ltxav(version) ||
                            sd_version_is_wan(version) ||
                            sd_version_is_qwen_image(version) ||
                            version == VERSION_HIDREAM_O1 ||
@@ -1106,16 +1120,17 @@ public:
                            sd_version_is_ernie_image(version) ||
                            sd_version_is_z_image(version)) {
                     pred_type = FLOW_PRED;
-                    if (sd_version_is_ltxav(version)) {
-                        default_flow_shift = 2.37f;
-                    } else if (sd_version_is_wan(version)) {
+                    if (sd_version_is_wan(version)) {
                         default_flow_shift = 5.f;
                     } else if (sd_version_is_ernie_image(version)) {
                         default_flow_shift = 4.f;
                     } else {
                         default_flow_shift = 3.f;
                     }
-                } else if (sd_version_is_flux(version) || sd_version_is_longcat(version)) {
+                } else if (sd_version_is_flux(version) ||
+                           sd_version_is_longcat(version) ||
+                           sd_version_is_lens(version) ||
+                           sd_version_is_ltxav(version)) {
                     pred_type = FLUX_FLOW_PRED;
 
                     default_flow_shift = 1.0f;  // TODO: validate
@@ -1127,6 +1142,10 @@ public:
                     }
                     if (sd_version_is_longcat(version)) {
                         default_flow_shift = 3.0f;
+                    } else if (sd_version_is_lens(version)) {
+                        default_flow_shift = 1.83f;
+                    } else if (sd_version_is_ltxav(version)) {
+                        default_flow_shift = 2.37f;
                     }
                 } else if (sd_version_is_flux2(version)) {
                     pred_type = FLUX2_FLOW_PRED;
