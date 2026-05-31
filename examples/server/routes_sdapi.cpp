@@ -2,11 +2,13 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstring>
 #include <regex>
 #include <string_view>
 #include <unordered_map>
 
+#include "async_jobs.h"
 #include "common/common.h"
 #include "common/media_io.h"
 #include "common/resource_owners.hpp"
@@ -351,6 +353,67 @@ void register_sdapi_endpoints(httplib::Server& svr, ServerRuntime& rt) {
 
     svr.Post("/sdapi/v1/img2img", [sdapi_any2img](const httplib::Request& req, httplib::Response& res) {
         sdapi_any2img(req, res, true);
+    });
+
+    svr.Post("/sdapi/v1/extra-single-image", [runtime](const httplib::Request& req, httplib::Response& res) {
+        try {
+            if (req.body.empty()) {
+                res.status = 400;
+                res.set_content(R"({"error":"empty body"})", "application/json");
+                return;
+            }
+
+            json j = json::parse(req.body);
+
+            if (!j.contains("image") || !j["image"].is_string() || j["image"].get<std::string>().empty()) {
+                res.status = 400;
+                res.set_content(R"({"error":"image field is required"})", "application/json");
+                return;
+            }
+
+            UpscaleJobRequest request;
+            request.image_b64             = j["image"].get<std::string>();
+            request.upscaler_1            = j.value("upscaler_1", std::string("None"));
+            request.upscaler_2            = j.value("upscaler_2", std::string("None"));
+            request.upscaler_2_visibility = j.value("extras_upscaler_2_visibility", 0.0f);
+            request.tile_size             = j.value("upscale_tile_size", 128);
+            request.output_format         = "png";
+            request.output_compression    = 100;
+
+            // Scale / target dimensions
+            float upscaling_resize  = j.value("upscaling_resize", 2.0f);
+            int upscaling_resize_w  = j.value("upscaling_resize_w", 0);
+            int upscaling_resize_h  = j.value("upscaling_resize_h", 0);
+            if (upscaling_resize_w > 0 && upscaling_resize_h > 0) {
+                request.target_width  = upscaling_resize_w;
+                request.target_height = upscaling_resize_h;
+            } else {
+                request.scale = upscaling_resize;
+            }
+
+            std::string error_message;
+            std::string output_b64;
+            if (!perform_upscale(*runtime, request, output_b64, error_message)) {
+                res.status = 500;
+                res.set_content(json({{"error", error_message}}).dump(), "application/json");
+                return;
+            }
+
+            json out;
+            out["image"]     = std::move(output_b64);
+            out["html_info"] = "";
+            res.status       = 200;
+            res.set_content(out.dump(), "application/json");
+        } catch (const json::parse_error& e) {
+            res.status = 400;
+            res.set_content(json({{"error", "invalid json"}, {"message", e.what()}}).dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 500;
+            json err;
+            err["error"]   = "server_error";
+            err["message"] = e.what();
+            res.set_content(err.dump(), "application/json");
+        }
     });
 
     svr.Get("/sdapi/v1/loras", [runtime](const httplib::Request&, httplib::Response& res) {
