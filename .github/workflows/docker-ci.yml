@@ -8,7 +8,7 @@ on:
     paths:
       - ".github/workflows/docker-ci.yml"
       - ".dockerignore"
-      - "Dockerfile*"
+      - "docker/Dockerfile*"
       - "**/CMakeLists.txt"
       - "**/*.h"
       - "**/*.hpp"
@@ -135,7 +135,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.vulkan
+          file: docker/Dockerfile.vulkan
           platforms: linux/amd64
           push: true
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.check-ancestry.outputs.safe-branch }}-${{ needs.check-ancestry.outputs.short-sha }}
