@@ -165,6 +165,39 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
+  /sdapi/v1/extra-single-image:
+    post:
+      tags: [Stable Diffusion WebUI API]
+      operationId: extraSingleImage
+      summary: Upscale a single image
+      description: |
+        Post-processes a single image using one or two upscalers. Supports model-backed
+        upscalers (ESRGAN, from `--hires-upscalers-dir`) and built-in upscalers
+        (`None`, `Lanczos`, `Nearest`). When both `upscaler_1` and `upscaler_2` are set
+        and `extras_upscaler_2_visibility` is greater than 0, the two outputs are
+        pixel-blended by that factor.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExtraSingleImageRequest"
+            example:
+              image: "<base64-encoded-png>"
+              upscaler_1: "Lanczos"
+              upscaling_resize: 2.0
+      responses:
+        "200":
+          description: Upscaled image
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtraSingleImageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
   /sdapi/v1/loras:
     get:
       tags: [Stable Diffusion WebUI API]
@@ -398,6 +431,50 @@ paths:
                 status: queued
                 created: 1775401200
                 poll_url: /sdcpp/v1/jobs/job_01HTXYZVID
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "429":
+          $ref: "#/components/responses/QueueFull"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /sdcpp/v1/upscale:
+    post:
+      tags: [sdcpp Native API]
+      operationId: submitUpscale
+      summary: Submit an async upscale job
+      description: |
+        Submits a standalone image upscaling job to the queue. Returns `202 Accepted`
+        immediately with a `poll_url`. Poll `GET /sdcpp/v1/jobs/{id}` to check
+        status and retrieve the result when complete.
+
+        Supports model-backed upscalers (ESRGAN, scanned from `--hires-upscalers-dir`)
+        and built-in upscalers (`None`, `Lanczos`, `Nearest`). When both `upscaler_2` is
+        set and `upscaler_2_visibility` is greater than 0, the two outputs are blended.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpscaleRequest"
+            example:
+              image: "<base64-encoded-png>"
+              upscaler: "Lanczos"
+              scale: 2.0
+              output_format: png
+      responses:
+        "202":
+          description: Job accepted and queued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobSubmissionResponse"
+              example:
+                id: job_01HTXYZUPS
+                kind: upscale
+                status: queued
+                created: 1775401200
+                poll_url: /sdcpp/v1/jobs/job_01HTXYZUPS
         "400":
           $ref: "#/components/responses/BadRequest"
         "429":
@@ -1498,6 +1575,112 @@ components:
         sd_model_checkpoint:
           type: string
           description: Model stem of the currently loaded model
+
+    ExtraSingleImageRequest:
+      type: object
+      required: [image]
+      description: Request body for `POST /sdapi/v1/extra-single-image`
+      properties:
+        image:
+          type: string
+          description: Input image as a raw base64 string or data URL (3-channel RGB)
+        upscaling_resize:
+          type: number
+          description: Scale factor; used when upscaling_resize_w and upscaling_resize_h are both 0
+          default: 2.0
+        upscaling_resize_w:
+          type: integer
+          description: Target width in pixels; 0 uses upscaling_resize
+          default: 0
+        upscaling_resize_h:
+          type: integer
+          description: Target height in pixels; 0 uses upscaling_resize
+          default: 0
+        upscaler_1:
+          type: string
+          description: |
+            Primary upscaler name. Use `None`, `Lanczos`, `Nearest`, or a model name
+            from `GET /sdapi/v1/upscalers`.
+          default: "None"
+        upscaler_2:
+          type: string
+          description: |
+            Optional secondary upscaler name, blended with the output of upscaler_1.
+            Same allowed values as upscaler_1. Ignored when extras_upscaler_2_visibility is 0.
+          default: "None"
+        extras_upscaler_2_visibility:
+          type: number
+          description: Blend factor for the secondary upscaler (0.0 = only upscaler_1, 1.0 = only upscaler_2)
+          default: 0.0
+        upscale_first:
+          type: boolean
+          description: Placeholder for face-restoration ordering; face restoration is not supported and this has no effect
+          default: false
+        upscale_tile_size:
+          type: integer
+          description: Tile size for model-backed upscalers; 0 disables tiling
+          default: 128
+
+    ExtraSingleImageResponse:
+      type: object
+      description: Response from `POST /sdapi/v1/extra-single-image`
+      properties:
+        image:
+          type: string
+          description: Base64-encoded PNG output image
+        html_info:
+          type: string
+          description: Currently always an empty string
+
+    UpscaleRequest:
+      type: object
+      required: [image]
+      description: Request body for `POST /sdcpp/v1/upscale`
+      properties:
+        image:
+          type: string
+          description: Input image as a raw base64 string or data URL (3-channel RGB)
+        upscaler:
+          type: string
+          description: |
+            Primary upscaler name. Use `None`, `Lanczos`, `Nearest`, or a model name
+            from the `upscalers` list in `GET /sdcpp/v1/capabilities`.
+          default: "None"
+        upscaler_2:
+          type: string
+          description: |
+            Optional secondary upscaler name, blended with the output of the primary upscaler.
+            Same allowed values as upscaler. Ignored when upscaler_2_visibility is 0.
+          default: "None"
+        upscaler_2_visibility:
+          type: number
+          description: Blend factor for the secondary upscaler (0.0 = only primary, 1.0 = only secondary)
+          default: 0.0
+        scale:
+          type: number
+          description: Scale factor; used when target_width and target_height are both 0
+          default: 2.0
+        target_width:
+          type: integer
+          description: Target width in pixels; 0 uses scale
+          default: 0
+        target_height:
+          type: integer
+          description: Target height in pixels; 0 uses scale
+          default: 0
+        tile_size:
+          type: integer
+          description: Tile size for model-backed upscalers; 0 disables tiling
+          default: 128
+        output_format:
+          type: string
+          description: Output image format
+          enum: [png, jpeg, webp]
+          default: png
+        output_compression:
+          type: integer
+          description: Output compression quality clamped to 0–100; 100 is maximum quality
+          default: 100
 
     # ── Shared error schema ──────────────────────────────────────────────────
 
